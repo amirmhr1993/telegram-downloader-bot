@@ -17,7 +17,7 @@ class YouTubeDownloader:
 
     @staticmethod
     def _get_base_opts():
-        opts = {"quiet": True, "no_warnings": True}
+        opts = {"quiet": True, "no_warnings": True, "js_runtimes": ["node"]}
         if os.path.exists(COOKIES_FILE):
             opts["cookies"] = COOKIES_FILE
         return opts
