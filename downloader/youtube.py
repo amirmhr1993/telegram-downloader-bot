@@ -6,7 +6,7 @@ import json
 import yt_dlp
 
 
-COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
 
 
 class YouTubeDownloader:
@@ -24,7 +24,7 @@ class YouTubeDownloader:
 
     @staticmethod
     def _base_cmd():
-        cmd = ["python", "-m", "yt_dlp", "--js-runtimes", "node", "--quiet", "--no-warnings"]
+        cmd = ["python", "-m", "yt_dlp", "--js-runtimes", "node", "--no-warnings"]
         if os.path.exists(COOKIES_FILE):
             cmd += ["--cookies", COOKIES_FILE]
         return cmd
