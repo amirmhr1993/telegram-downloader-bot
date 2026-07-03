@@ -1,6 +1,8 @@
 import os
 import re
 import tempfile
+import subprocess
+import json
 import yt_dlp
 
 
@@ -16,25 +18,27 @@ class YouTubeDownloader:
     }
 
     @staticmethod
-    def _get_base_opts():
-        opts = {"quiet": True, "no_warnings": True, "js_runtimes": ["node"]}
-        if os.path.exists(COOKIES_FILE):
-            opts["cookies"] = COOKIES_FILE
-        return opts
-
-    @staticmethod
     def is_youtube_url(url: str) -> bool:
         pattern = r"(?:https?://)?(?:www\.)?(?:youtube\.com/(?:watch\?.*v=|shorts/)|youtu\.be/)"
         return bool(re.match(pattern, url))
 
     @staticmethod
-    async def get_formats(url: str) -> list[dict]:
-        ydl_opts = YouTubeDownloader._get_base_opts()
-        ydl_opts["skip_download"] = True
+    def _base_cmd():
+        cmd = ["python", "-m", "yt_dlp", "--js-runtimes", "node", "--quiet", "--no-warnings"]
+        if os.path.exists(COOKIES_FILE):
+            cmd += ["--cookies", COOKIES_FILE]
+        return cmd
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    @staticmethod
+    async def get_formats(url: str) -> dict:
+        cmd = YouTubeDownloader._base_cmd() + [
+            "--skip-download", "--dump-json", url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if result.returncode != 0:
+            raise Exception(result.stderr.strip() or "Failed to get video info")
 
+        info = json.loads(result.stdout)
         formats = []
         seen_heights = set()
         for f in info.get("formats", []):
@@ -57,33 +61,50 @@ class YouTubeDownloader:
 
         format_str = YouTubeDownloader.QUALITY_MAP.get(quality, YouTubeDownloader.QUALITY_MAP["best"])
 
-        def progress_hook(d):
-            if progress_callback and d["status"] == "downloading":
-                total = d.get("total_bytes") or d.get("total_bytes_estimate")
-                downloaded = d.get("downloaded_bytes", 0)
-                if total:
-                    percent = downloaded / total * 100
-                    speed = d.get("speed")
-                    speed_str = f"{speed / 1024 / 1024:.1f} MB/s" if speed else "N/A"
-                    progress_callback(percent, speed_str)
-            elif progress_callback and d["status"] == "finished":
-                progress_callback(100, "Processing...")
+        cmd = YouTubeDownloader._base_cmd() + [
+            "-f", format_str,
+            "--merge-output-format", "mp4",
+            "-o", output_path,
+            "--newline",
+            url,
+        ]
 
-        ydl_opts = YouTubeDownloader._get_base_opts()
-        ydl_opts.update({
-            "format": format_str,
-            "outtmpl": output_path,
-            "merge_output_format": "mp4",
-            "progress_hooks": [progress_hook],
-        })
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+        for line in proc.stdout:
+            line = line.strip()
+            if progress_callback and "%" in line:
+                try:
+                    parts = line.split()
+                    for part in parts:
+                        if "%" in part:
+                            pct = float(part.replace("%", ""))
+                            speed = "N/A"
+                            if "/" in line:
+                                speed_part = line.split("/")[-1].strip().split()[0] if line.split("/")[-1].strip() else "N/A"
+                                speed = speed_part
+                            progress_callback(pct, speed)
+                            break
+                except (ValueError, IndexError):
+                    pass
 
-        if not filename.endswith(".mp4"):
-            mp4_path = filename.rsplit(".", 1)[0] + ".mp4"
-            if os.path.exists(mp4_path):
-                filename = mp4_path
+        proc.wait()
 
-        return filename
+        if proc.returncode != 0:
+            raise Exception("Download failed")
+
+        # Find the downloaded file
+        for f in os.listdir(tmp_dir):
+            if f.endswith(".mp4") or f.endswith(".webm") or f.endswith(".mkv"):
+                filepath = os.path.join(tmp_dir, f)
+                # Convert to mp4 if needed
+                if not f.endswith(".mp4"):
+                    mp4_path = filepath.rsplit(".", 1)[0] + ".mp4"
+                    convert_cmd = ["ffmpeg", "-i", filepath, "-c", "copy", mp4_path, "-y"]
+                    subprocess.run(convert_cmd, capture_output=True, timeout=120)
+                    if os.path.exists(mp4_path):
+                        os.remove(filepath)
+                        filepath = mp4_path
+                return filepath
+
+        raise Exception("No output file found")
